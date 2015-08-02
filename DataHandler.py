@@ -12,15 +12,16 @@ import time
 import re
 from HTMLParser import HTMLParser
 from pango import AttrScale
+from MySQLdb.constants.FIELD_TYPE import NULL
 
 
 proxies = {
 	"http":""
 		}
 
-proxies_server = ["","http://120.194.216.169:80","http://183.207.229.11:80","http://120.198.243.79:80","http://221.238.197.34:80","http://183.207.229.11:26"]
+proxies_server = ["","http://221.176.14.72:80","http://111.1.36.6:80","http://113.225.37.43:80","http://202.108.23.247:80","http://111.12.251.162:80"]
 
-logging.basicConfig(filename='./log.log',level=logging.INFO)
+logging.basicConfig(filename='/my-work/code/new_WebHandler/log.log',level=logging.INFO)
 
 
 TITLE = 1
@@ -42,6 +43,7 @@ class MyHTMLParser(HTMLParser):
 		self.propertyName = ''
 		self.f = f
 		self.link=''
+		self.extraInfo = []
 		
 	def handle_starttag(self, tag, attrs):   
 	#print "Encountered the beginning of a %s tag" % tag
@@ -59,20 +61,26 @@ class MyHTMLParser(HTMLParser):
 			
 	def handle_endtag(self, tag):
 		contentList = list()
+		bWrite = True
 		if self.link and self.index == TITLE+2:
 			contentList.append('Downloader')
 			contentList[-1]=ContentHandler(self.link)
-			if contentList[-1].dirPrefix:
-				logging.info('Going to downloading data from %s' %self.link[self.link.rindex('/'):])
-				print ('Going to downloading data from %s' %self.link[self.link.rindex('/'):])
-				try:
-					contentList[-1].run()
-				finally:
-					self.link=''
+			try:
+				self.extraInfo= contentList[-1].run(self.link)
+			finally:
+				self.link=''
 		if tag == "div" and len(self.inputFlow)>0:
-			writer = csv.writer(self.f)
-			writer.writerow(self.inputFlow)
+			if len(self.extraInfo) == 2:
+				self.inputFlow.append(self.extraInfo[0])
+				self.inputFlow.append(self.extraInfo[1])
+			for item in self.inputFlow:
+				if '#1' in item:
+					bWrite = False
+			if bWrite:
+				writer = csv.writer(self.f)
+				writer.writerow(self.inputFlow)
 			del self.inputFlow[:]
+			del self.extraInfo[:]
 			self.index = False
 			logging.info('p-%s Done...' %self.page)
 			
@@ -82,19 +90,30 @@ class MyHTMLParser(HTMLParser):
 			data = data.translate(None,'\t\n')
 			if len(data) != 0:
 				if self.index == TITLE:
+					id = re.search('\d+',self.link)
+					if id:
+						self.inputFlow.append(id.group())
+						print 'ID : ' + id.group()
+					else:
+						self.inputFlow.append(' ')
+						print 'ID : '
 					self.inputFlow.append(data)
 					print 'Name : '+data
 					logging.info('p-%s is handling %s' %(self.page, data))
 					print ('p-%s is handling %s' %(self.page, data))
 					self.propertyName = data
 				elif self.index == TITLE+1: 
-					self.inputFlow.append(data)
-					print 'Type : '+data
+					type = re.search('\d+',data)
+					if not type:
+						type = re.search('freehold',data,re.I)
+					if type:
+						print 'Type : '+type.group()
+						self.inputFlow.append(type.group())
 				elif self.index == TITLE+2:
 					price = data.split("\r")[0].strip()
-					price = price.translate(None,'\t\n S$')
+					price = price.translate(None,'\t\n, ')
 					aera = data.split("\r")[-1].strip()
-					aera = aera.translate(None,'\t\n /')
+					aera = aera.translate(None,'\t\n, /')
 					self.inputFlow.append(price)
 					print 'Price: '+price
 					self.inputFlow.append(aera)
@@ -156,18 +175,25 @@ class ContentHandler (multiprocessing.Process):
 		if not os.path.exists(self.dirPrefix):
 			os.system('mkdir -p '+self.dirPrefix)
 		else:
-			logging.info('	The referred content have downloaded, exiting download process..')
-			logging.info('	++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n')
-			print('	The referred content have downloaded, exiting download process..')
-			print('	++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n')
+			logging.info('	The referred content have downloaded')
+			print('	The referred content have downloaded')
 			self.dirPrefix = ''
 						
-	def run(self):
-		time.sleep(5)
+	def run(self,link):
+		resp = getRightWebResponse(self.URL,'<!-- Retrieve Media-->')
+		if resp == NULL:
+			return NULL
+		Data = resp.content[resp.content.index('<!-- Retrieve Media-->'):]
+		extraInfo = getTopNMrtInfo(Data)
+		if self.dirPrefix == '':
+			return extraInfo
+		
+		logging.info('Going to downloading data from %s' %link[link.rindex('/'):])
+		print ('Going to downloading data from %s' %link[link.rindex('/'):])
 		starttime = time.time()
 		parser = SingleWebParser(self.dirPrefix)
-		resp = getRightWebResponse(self.URL,'<!-- Retrieve Media-->')
-		Data = resp.content[resp.content.index('<!-- Retrieve Media-->'):]
+		f  = open('/my-work/code/new_WebHandler/output_single_link.txt','wb')
+		print >> f,Data 
 		if Data:
 			try:
 				parser.feed(Data)
@@ -176,10 +202,11 @@ class ContentHandler (multiprocessing.Process):
 		
 		logging.info('Time Spend on '+__name__+' : ------->'+str(time.time()-starttime))
 		print('Time Spend on '+__name__+' : ------->'+str(time.time()-starttime))
+		return extraInfo
 			
 			
 def getCurrentTimeStr():
-		return time.strftime("%Y%m%d%H%M")
+		return time.strftime("%Y%m%d")
 	
 	
 def getRightWebResponse(url,targetStr):
@@ -205,4 +232,20 @@ def getRightWebResponse(url,targetStr):
 			
 	print "\nOh,no! No data retreived, exiting.."
 	logging.info('Request Rejected by Website')
-	exit()
+	return NULL
+	
+def getTopNMrtInfo(Data):
+	logging.info('	trying to collect TOP and MRT Information')
+	print('	trying to collect TOP and MRT Information')
+	infoList =[]
+	topRoughInfo = re.search('top year.+\d+', Data,re.I).group()
+	topYear = re.findall('\d+',topRoughInfo)
+	if topYear:
+		infoList.append(topYear[-1])
+	mrtRoughInfo = re.search('(/.+mrt-station.+km\\))', Data,re.I).group()
+	mrtDistance = re.search('\d+\.\d+',mrtRoughInfo)
+	mrtName = re.search('[\w\s]+.mrt station',mrtRoughInfo,re.I)
+	if mrtDistance and mrtName:
+		mrtInfo = mrtDistance.group()+'-'+mrtName.group()
+		infoList.append(mrtInfo)
+	return infoList
